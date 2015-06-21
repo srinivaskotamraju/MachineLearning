@@ -1,0 +1,294 @@
+
+Practical Machine Learning (Data Science) -- Prediction Algorithm
+===================================================================================
+by __SK__<br>
+`r format(Sys.time(), "%A, %B %d, %Y")`
+
+> **Background**
+
+> Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement – a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, your goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website here: http://groupware.les.inf.puc-rio.br/har (see the section on the Weight Lifting Exercise Dataset). 
+
+> Six young health participants were asked to perform one set of 10 repetitions of the Unilateral Dumbbell Biceps Curl in five different fashions: exactly according to the specification (Class A), throwing the elbows to the front (Class B), lifting the dumbbell only halfway (Class C), lowering the dumbbell only halfway (Class D) and throwing the hips to the front (Class E).
+
+> The data for this machine learning excercise is available [here] (http://groupware.les.inf.puc-rio.br/har source)
+
+## Objective
+
+The objective of the project/assignment is to predict how well the participant did the exercise (Class A|B|C|D|E). For this we are provided with data to train our model and finally we have to classify 20 test records provided as testing data. This comes under supervised learning (mutli class).
+
+## Data
+
+Training data is available [here] (http://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv).<br>
+Testing data is available [here] (http://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv).
+
+## Load the data
+
+```{r message=FALSE,warning=FALSE,results="hide",CACHE=TRUE}
+
+if(!require(grid)){install.packages("caret")}
+if(!require(grid)){install.packages("parallel")}
+if(!require(grid)){install.packages("doParallel")}
+if(!require(grid)){install.packages("kernlab")}
+
+library(caret)
+library(parallel)
+library(doParallel)
+library(kernlab)
+
+
+if (!(file.exists("pml-training.csv"))) {
+        url<- "http://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+        download.file(url,"pml-training.csv")
+}
+
+if (!(file.exists("pml-testing.csv"))) {
+        url<- "http://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+        download.file(url,"pml-testing.csv")
+}
+
+Sys.setlocale("LC_TIME", "English")
+
+oDf<-data.frame(read.csv("pml-training.csv",na.strings=c("NA", "NULL","","#DIV/0!"),header=T))
+oDfTesting<-data.frame(read.csv("pml-testing.csv",na.strings=c("NA", "NULL","","#DIV/0!"),header=T))
+
+```
+
+From the data create data partition comprising of training and testing (with 70% for training and 30% for testing)
+
+```{r message=FALSE,warning=FALSE,results="hide",CACHE=TRUE}
+
+inTrain <- createDataPartition(y=oDf$classe,p=0.70, list=FALSE)
+
+training <- oDf[inTrain,]
+testing <- oDf[-inTrain,]
+
+```
+
+## Data Analysis
+
+Training data set
+
+```{r message=FALSE,warning=FALSE,CACHE=TRUE}
+
+dim(training)
+
+```
+
+Testing data set
+
+```{r message=FALSE,warning=FALSE,CACHE=TRUE}
+
+dim(testing)
+
+```
+
+Summary
+
+```{r message=FALSE,warning=FALSE,CACHE=TRUE}
+
+str(training)
+```
+
+From the above output we observe that many columns have NA (data not available). As part of pre processing we would delete those columns which have NA. If the performance of the model is worse, then we would remove columns which have NA at certain threshold and then impute the missing values.
+
+
+## Pre-Processing
+
+**Pre-Processing 1**
+
+Drop the columns which have NA.
+
+```{r message=FALSE,warning=FALSE,CACHE=TRUE}
+
+training<-training[, colSums(is.na(training)) == 0]
+
+dim(training)
+
+```
+
+**Pre-Processing 2**
+
+Further analysis of the data reveal that columns __X, user_name, raw_timestamp_part_1, raw_timestamp_part_2, cvtd_timestamp, new_window,  num_window__ are not relevant to the model building, so we would remove them from the training set.
+
+```{r message=FALSE,warning=FALSE,CACHE=TRUE}
+
+training <- training[, -which(names(training) %in% c('X', 'user_name', 'raw_timestamp_part_1', 'raw_timestamp_part_2', 'cvtd_timestamp', 'new_window', 'num_window'))]
+
+dim(training)
+
+```
+
+**Pre-Processing 3**
+
+Also remove the columns which are near zero.
+
+
+```{r message=FALSE,warning=FALSE,CACHE=TRUE}
+
+nzv <- nearZeroVar(training)
+if(length(nzv) > 0) training <- training[, -nzv]
+
+dim(training)
+
+```
+
+**Pre-Processing 4**
+
+Also remove the columns which have correlation with cutoff 90%
+
+```{r message=FALSE,warning=FALSE,CACHE=TRUE}
+
+descrCor <- cor(training[sapply(training, is.numeric)])
+highlyCorDescr <- findCorrelation(descrCor, cutoff = .90)
+training <- training[,-highlyCorDescr]
+
+dim(training)
+
+```
+
+With the pre-processing we could reduce the feature set from 160 columns to `r dim(training)[2]`, now we would build the model.
+
+## Model building
+
+Now we would build the model with the pre processed data. 
+
+__Error Rate -- __
+We would try to achieve __3%__ as out of sample error. Anything more than that is not acceptable. 
+
+__Least Squares Support Vector Machine with Radial Basis Function Kernel__
+
+* We would build the model using svmRadial from caret package.
+* Measure the performance and see if it can improved.
+* To speeden up the model building processing, run the package in allowParallel=TRUE mode.
+
+```{r message=FALSE,warning=FALSE,results="hide",CACHE=TRUE}
+control <- trainControl(method = "cv", number = 3, allowParallel = TRUE, verboseIter = TRUE)
+ptm <- proc.time()
+cluster1=makeCluster(detectCores())
+registerDoParallel(cluster1)
+set.seed(32343)
+modelFit1 <- train(training$classe ~ .,data=training, method="svmRadial",trControl=control)
+stopCluster(cluster1)
+
+```
+
+Print the processing time required to build the model. Since this is a `r detectCores()` Core machine, Time to build model can be improved with higher no cores.
+
+```{r message=FALSE,warning=FALSE,CACHE=TRUE}
+proc.time() - ptm
+```
+
+Analyze the model
+
+```{r message=FALSE,warning=FALSE,CACHE=TRUE}
+modelFit1
+```
+
+The accuracy is about `r sort(modelFit1$results$Accuracy,TRUE)[1]`, with higher cost (C) function we can achieve better accuracy, but that also might result in over-fitting, let us try random forest and see if it gives better performance.
+
+__Random Forest__
+
+* We would build the model using Random Forest from caret package.
+* Measure the performance and see if it can improved.
+* To speeden up the model building processing, run the package in allowParallel=TRUE mode.
+
+```{r message=FALSE,warning=FALSE,CACHE=TRUE}
+control <- trainControl(method = "cv", number = 3, allowParallel = TRUE, verboseIter = TRUE)
+ptm <- proc.time()
+cluster1=makeCluster(detectCores())
+registerDoParallel(cluster1)
+set.seed(32343)
+modelFit2 <- train(training$classe ~ .,data=training, method="rf",trControl=control)
+stopCluster(cluster1)
+```
+
+Print the processing time required to build the model.
+
+```{r message=FALSE,warning=FALSE,CACHE=TRUE}
+proc.time() - ptm
+```
+
+Analyze the model
+
+```{r message=FALSE,warning=FALSE,CACHE=TRUE}
+modelFit2
+```
+
+The accuracy is about `r sort(modelFit2$results$Accuracy,TRUE)[1]`, it is evident that random forest gave better performance (with better model error).
+
+## Out of Sample Error
+
+Now for the two models calculate out of sample error, prepare testing data (by applying the 3 pre-processing steps). This is simply done by sub-setting the same columns as training.
+
+```{r message=FALSE,warning=FALSE,CACHE=TRUE}
+testing<-testing[colnames(training)]
+```
+
+__Least Squares Support Vector Machine with Radial Basis Function Kernel__
+
+```{r message=FALSE,warning=FALSE,CACHE=TRUE}
+confMat1<- confusionMatrix(predict(modelFit1,newdata=testing),testing$classe)
+```
+
+Confusion Matrix for __Least Squares Support Vector Machine with Radial Basis Function Kernel__
+
+```{r message=FALSE,warning=FALSE,CACHE=TRUE}
+confMat1
+```
+
+The out of sample error `r (1-confMat1$overall['Accuracy'])*100`% is above than what we proposed.
+
+__Random Forest__
+
+```{r message=FALSE,warning=FALSE,CACHE=TRUE}
+confMat2<- confusionMatrix(predict(modelFit2,newdata=testing),testing$classe)
+```
+
+Confusion Matrix for __Random Forest__
+
+```{r message=FALSE,warning=FALSE,CACHE=TRUE}
+confMat2
+```
+
+The out of sample error `r (1-confMat2$overall['Accuracy'])*100`% is way below than what we proposed, so the above model can be accepted.
+
+## Prediction
+
+Moment of truth, make the predictions on un-labelled data. While sub-setting, ensure the last column (classe) is skipped.
+
+```{r message=FALSE,warning=FALSE,CACHE=TRUE}
+
+# sub-setting and also skipping the last column (classe).
+oDfTesting<-oDfTesting[colnames(testing[, -dim(testing)[2]])]
+
+
+predict1<- predict(modelFit1,newdata=oDfTesting)
+predict2<- predict(modelFit2,newdata=oDfTesting)
+
+```
+
+Model 1 prediction
+
+```{r message=FALSE,warning=FALSE,CACHE=TRUE}
+
+predict1
+
+```
+
+Model 2 prediction
+
+```{r message=FALSE,warning=FALSE,CACHE=TRUE}
+
+predict2
+
+```
+
+We see both model performs exceptionally well and also from the two models the final predictions are same.
+
+```{r message=FALSE,warning=FALSE,CACHE=TRUE}
+
+all.equal(predict1,predict2)
+
+```
+
+----------------------
